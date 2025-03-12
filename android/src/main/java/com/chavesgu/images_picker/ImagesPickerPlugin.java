@@ -19,6 +19,28 @@ import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import io.flutter.embedding.engine.plugins.FlutterPlugin;
+import io.flutter.embedding.engine.plugins.activity.ActivityAware;
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
+import io.flutter.plugin.common.MethodCall;
+import io.flutter.plugin.common.MethodChannel;
+import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
+import io.flutter.plugin.common.MethodChannel.Result;
+
+import com.luck.picture.lib.PictureSelectionModel;
+import com.luck.picture.lib.PictureSelector;
+import com.luck.picture.lib.config.PictureConfig;
+import com.luck.picture.lib.config.PictureMimeType;
+import com.luck.picture.lib.entity.LocalMedia;
+import com.luck.picture.lib.language.LanguageConfig;
+import com.luck.picture.lib.listener.OnResultCallbackListener;
+import com.luck.picture.lib.tools.PictureFileUtils;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -34,40 +56,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
-import androidx.annotation.NonNull;
-
-import androidx.annotation.Nullable;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-import io.flutter.embedding.engine.plugins.FlutterPlugin;
-import io.flutter.embedding.engine.plugins.activity.ActivityAware;
-import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
-import io.flutter.plugin.common.MethodCall;
-import io.flutter.plugin.common.MethodChannel;
-import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
-import io.flutter.plugin.common.MethodChannel.Result;
-import io.flutter.plugin.common.PluginRegistry;
-import io.flutter.plugin.common.PluginRegistry.Registrar;
-
-import com.luck.picture.lib.PictureSelectionModel;
-import com.luck.picture.lib.PictureSelector;
-import com.luck.picture.lib.config.PictureConfig;
-import com.luck.picture.lib.config.PictureMimeType;
-import com.luck.picture.lib.entity.LocalMedia;
-import com.luck.picture.lib.language.LanguageConfig;
-import com.luck.picture.lib.listener.OnResultCallbackListener;
-import com.luck.picture.lib.tools.PictureFileUtils;
-
 import static android.app.Activity.RESULT_OK;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static java.io.File.separator;
 
 /** ImagesPickerPlugin */
-public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.RequestPermissionsResultListener {
-  /// The MethodChannel that will the communication between Flutter and native Android
-  ///
-  /// This local reference serves to register the plugin with the Flutter Engine and unregister it
-  /// when the Flutter Engine is detached from the Activity
+public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, ActivityAware {
   private MethodChannel channel;
   private Result _result;
   private Activity activity;
@@ -77,6 +71,7 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
   private String WRITE_IMAGE_PATH;
   private String WRITE_VIDEO_PATH;
   private String ALBUM_NAME;
+  private ActivityPluginBinding activityBinding; // To handle permissions
   public static String channelName = "chavesgu/images_picker";
 
   @Override
@@ -86,40 +81,38 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
     context = flutterPluginBinding.getApplicationContext();
   }
 
-  public static void registerWith(Registrar registrar) {
-    ImagesPickerPlugin instance = new ImagesPickerPlugin();
-    final MethodChannel channel = new MethodChannel(registrar.messenger(), channelName);
-    channel.setMethodCallHandler(instance);
-    instance.context = registrar.context();
-    registrar.addRequestPermissionsResultListener(instance);
-  }
-
   @Override
   public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
     channel.setMethodCallHandler(null);
+    channel = null;
+    context = null;
   }
 
   @Override
   public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
     activity = binding.getActivity();
-    binding.addRequestPermissionsResultListener(this);
+    activityBinding = binding;
+    binding.addRequestPermissionsResultListener(new PermissionResultListener());
   }
 
   @Override
   public void onDetachedFromActivityForConfigChanges() {
-
+    activity = null;
+    activityBinding = null;
   }
 
   @Override
   public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
     activity = binding.getActivity();
+    activityBinding = binding;
+    binding.addRequestPermissionsResultListener(new PermissionResultListener());
   }
 
   @Override
   public void onDetachedFromActivity() {
-
+    activity = null;
+    activityBinding = null;
   }
-
 
   @Override
   public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
@@ -153,7 +146,7 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
                 .openGallery(chooseType);
         Utils.setLanguage(model, language);
         Utils.setPhotoSelectOpt(model, count, quality);
-        if (cropOption!=null) Utils.setCropOpt(model, cropOption);
+        if (cropOption != null) Utils.setCropOpt(model, cropOption);
         model.isGif(supportGif);
         model.videoMaxSecond(maxTime);
         resolveMedias(model);
@@ -180,14 +173,14 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
                 .openCamera(chooseType);
         model.setOutputCameraPath(context.getExternalCacheDir().getAbsolutePath());
         if (pickType.equals("PickType.image")) {
-          model.cameraFileName("image_picker_camera_"+UUID.randomUUID().toString()+".jpg");
+          model.cameraFileName("image_picker_camera_" + UUID.randomUUID().toString() + ".jpg");
         } else {
-          model.cameraFileName("image_picker_camera_"+UUID.randomUUID().toString()+".mp4");
+          model.cameraFileName("image_picker_camera_" + UUID.randomUUID().toString() + ".mp4");
         }
         model.recordVideoSecond(maxTime);
         Utils.setLanguage(model, language);
         Utils.setPhotoSelectOpt(model, 1, quality);
-        if (cropOption!=null) Utils.setCropOpt(model, cropOption);
+        if (cropOption != null) Utils.setCropOpt(model, cropOption);
         resolveMedias(model);
         break;
       }
@@ -221,11 +214,6 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
         }
         break;
       }
-//      case "saveNetworkImageToAlbum": {
-//        String url = (String) call.arguments;
-//        saveNetworkImageToGallery(url);
-//        break;
-//      }
       default:
         result.notImplemented();
         break;
@@ -236,25 +224,20 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
     model.forResult(new OnResultCallbackListener<LocalMedia>() {
       @Override
       public void onResult(final List<LocalMedia> medias) {
-        // 结果回调
         new Thread() {
           @Override
           public void run() {
-            final List<Object> resArr = new ArrayList<Object>();
-            for (LocalMedia media:medias) {
-              HashMap<String, Object> map = new HashMap<String, Object>();
+            final List<Object> resArr = new ArrayList<>();
+            for (LocalMedia media : medias) {
+              HashMap<String, Object> map = new HashMap<>();
               String path = media.getPath();
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 path = media.getAndroidQToPath();
               }
-
-//              if (media.isCut()) path = media.getCutPath();
-//              if (media.isCompressed()) path = media.getCompressPath();
               if (media.getMimeType().contains("image")) {
                 if (media.isCut()) path = media.getCutPath();
                 if (media.isCompressed()) path = media.getCompressPath();
               }
-//              path = copyToTmp(path);
               map.put("path", path);
 
               String thumbPath;
@@ -272,9 +255,6 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
               resArr.add(map);
             }
 
-//            PictureFileUtils.deleteCacheDirFile(context, type);
-//            PictureFileUtils.deleteAllCacheDirFile(context);
-
             new Handler(context.getMainLooper()).post(new Runnable() {
               @Override
               public void run() {
@@ -284,9 +264,9 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
           }
         }.start();
       }
+
       @Override
       public void onCancel() {
-        // 取消
         _result.success(null);
       }
     });
@@ -298,7 +278,7 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
     bitmap.compress(Bitmap.CompressFormat.JPEG, 100, bytes);
     try {
       File outputDir = context.getCacheDir();
-      File outputFile = File.createTempFile("image_picker_thumb_"+ UUID.randomUUID().toString(), ".jpg", outputDir);
+      File outputFile = File.createTempFile("image_picker_thumb_" + UUID.randomUUID().toString(), ".jpg", outputDir);
       FileOutputStream fo = new FileOutputStream(outputFile);
       fo.write(bytes.toByteArray());
       fo.close();
@@ -311,44 +291,12 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
 
   private int getFileSize(String path) {
     File file = new File(path);
-    int size = Integer.parseInt(String.valueOf(file.length()));
-    return size;
-  }
-
-  private String copyToTmp(String originPath) {
-    String resPath = originPath;
-    String suffix = originPath.substring(originPath.lastIndexOf('.'));
-    File from = new File(originPath);
-    File to;
-    try {
-      File outputDir = context.getCacheDir();
-      to = File.createTempFile("image_picker_"+ UUID.randomUUID().toString(), suffix, outputDir);
-
-      try {
-        InputStream in = new FileInputStream(from);
-        OutputStream out = new FileOutputStream(to);
-        byte[] buf = new byte[1024];
-        try {
-          int len;
-          while ((len = in.read(buf)) > 0) {
-            out.write(buf, 0, len);
-          }
-          resPath = to.getAbsolutePath();
-        } catch (IOException e) {
-          Log.w("image_picker", e.getLocalizedMessage());
-        }
-      } catch (FileNotFoundException e) {
-        Log.w("image_picker", e.getLocalizedMessage());
-      }
-    } catch (IOException e) {
-      Log.w("image_picker", e.getLocalizedMessage());
-    }
-    return resPath;
+    return (int) file.length();
   }
 
   private void saveImageToGallery(final String path, String albumName) {
     boolean status = false;
-    String suffix = path.substring(path.lastIndexOf('.')+1);
+    String suffix = path.substring(path.lastIndexOf('.') + 1);
     Bitmap bitmap = BitmapFactory.decodeFile(path);
     status = FileSaver.saveImage(context, bitmap, suffix, albumName);
     _result.success(status);
@@ -360,19 +308,23 @@ public class ImagesPickerPlugin implements FlutterPlugin, MethodCallHandler, Act
 
   private boolean hasPermission() {
     return Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-            (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PERMISSION_GRANTED && ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PERMISSION_GRANTED);
+            (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PERMISSION_GRANTED &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PERMISSION_GRANTED);
   }
 
+  // Inner class to handle permission results
+  private class PermissionResultListener implements PluginRegistry.RequestPermissionsResultListener {
     @Override
     public boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-      if (requestCode == WRITE_IMAGE_CODE && grantResults[0] == PERMISSION_GRANTED && grantResults[1] == PERMISSION_GRANTED) {
-          saveImageToGallery(WRITE_IMAGE_PATH, ALBUM_NAME);
-          return true;
+      if (requestCode == WRITE_IMAGE_CODE && grantResults.length > 1 && grantResults[0] == PERMISSION_GRANTED && grantResults[1] == PERMISSION_GRANTED) {
+        saveImageToGallery(WRITE_IMAGE_PATH, ALBUM_NAME);
+        return true;
       }
-      if (requestCode == WRITE_VIDEO_CODE && grantResults[0] == PERMISSION_GRANTED && grantResults[1] == PERMISSION_GRANTED) {
-          saveVideoToGallery(WRITE_VIDEO_PATH, ALBUM_NAME);
-          return true;
+      if (requestCode == WRITE_VIDEO_CODE && grantResults.length > 1 && grantResults[0] == PERMISSION_GRANTED && grantResults[1] == PERMISSION_GRANTED) {
+        saveVideoToGallery(WRITE_VIDEO_PATH, ALBUM_NAME);
+        return true;
       }
       return false;
     }
+  }
 }
